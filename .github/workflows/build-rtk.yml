@@ -1,0 +1,57 @@
+
+name: Build Realtek HCI Attach ARMv7
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd file
+
+      - name: Download OpenWrt SDK
+        run: |
+          curl -fL --retry 3 -o sdk.tar.zst \
+            "https://mirror.sjtu.edu.cn/openwrt/releases/25.12.6/targets/imx/cortexa7/openwrt-sdk-25.12.6-imx-cortexa7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          mkdir sdk
+          tar --zstd -xf sdk.tar.zst \
+            -C sdk --strip-components=1
+
+      - name: Compile Realtek HCI Attach
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="$PWD/sdk"
+          TOOLCHAIN=$(find "$SDK/staging_dir" \
+            -maxdepth 1 -type d -name 'toolchain-*' | head -1)
+
+          export STAGING_DIR="$SDK/staging_dir"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+
+          CC=$(find "$TOOLCHAIN/bin" -maxdepth 1 \
+            -name '*gcc' -type f | head -1)
+          test -n "$CC"
+
+          "$CC" -O2 -Wall \
+            -o rtk_hciattach-test \
+            rtk_hciattach/hciattach.c \
+            rtk_hciattach/hciattach_rtk.c
+
+          file rtk_hciattach-test
+
+      - name: Upload ARMv7 executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtk-hciattach-armv7-test
+          path: rtk_hciattach-test
+          if-no-files-found: error
