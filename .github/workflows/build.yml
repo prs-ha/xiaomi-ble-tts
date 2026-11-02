@@ -1,0 +1,60 @@
+
+name: Build BLE-TTS ARMv7
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd build-essential
+
+      - name: Download OpenWrt SDK
+        run: |
+          curl -fL --retry 3 \
+            -o sdk.tar.zst \
+            "https://mirror.sjtu.edu.cn/openwrt/releases/25.12.6/targets/imx/cortexa7/openwrt-sdk-25.12.6-imx-cortexa7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          mkdir sdk
+          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+
+      - name: Check source and SDK
+        run: |
+          test -f ble-tts.c
+          find sdk/staging_dir/toolchain-* -type f \
+            -name '*gcc' | head -10
+          find sdk/staging_dir/target-* -name 'gio-2.0.pc' \
+            -o -name 'glib-2.0.pc'
+
+      - name: Build BLE-TTS
+        run: |
+          set -eu
+          TOOLCHAIN=$(find "$PWD/sdk/staging_dir" \
+            -type f -name 'arm-openwrt-linux-muslgnueabi-gcc' \
+            | head -1)
+          test -n "$TOOLCHAIN"
+          SYSROOT=$(find "$PWD/sdk/staging_dir" \
+            -maxdepth 1 -type d -name 'target-*' | head -1)
+          test -n "$SYSROOT"
+
+          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+          export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig"
+          export PKG_CONFIG_PATH=""
+
+          "$TOOLCHAIN" --sysroot="$SYSROOT" \
+            -O2 -Wall -Wextra \
+            -o ble-tts ble-tts.c \
+            $(pkg-config --cflags --libs gio-2.0 glib-2.0 gobject-2.0)
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ble-tts-armv7
+          path: ble-tts
