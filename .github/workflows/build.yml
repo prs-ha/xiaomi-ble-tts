@@ -7,54 +7,70 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build tools
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zstd build-essential
+          sudo apt-get install -y \
+            build-essential zstd pkg-config \
+            python3 rsync unzip file
 
       - name: Download OpenWrt SDK
         run: |
-          curl -fL --retry 3 \
-            -o sdk.tar.zst \
+          curl -fL --retry 3 -o sdk.tar.zst \
             "https://mirror.sjtu.edu.cn/openwrt/releases/25.12.6/targets/imx/cortexa7/openwrt-sdk-25.12.6-imx-cortexa7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst"
           mkdir sdk
-          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          tar --zstd -xf sdk.tar.zst \
+            -C sdk --strip-components=1
 
-      - name: Check source and SDK
+      - name: Prepare GLib development libraries
+        working-directory: sdk
         run: |
-          test -f ble-tts.c
-          find sdk/staging_dir/toolchain-* -type f \
-            -name '*gcc' | head -10
-          find sdk/staging_dir/target-* -name 'gio-2.0.pc' \
-            -o -name 'glib-2.0.pc'
+          ./scripts/feeds update -a
+          ./scripts/feeds install glib2
+          make defconfig
+          make package/glib2/compile -j2 V=s
 
-      - name: Build BLE-TTS
+      - name: Compile BLE-TTS
+        shell: bash
         run: |
-          set -eu
-          TOOLCHAIN=$(find "$PWD/sdk/staging_dir" \
-            -type f -name 'arm-openwrt-linux-muslgnueabi-gcc' \
-            | head -1)
-          test -n "$TOOLCHAIN"
-          SYSROOT=$(find "$PWD/sdk/staging_dir" \
+          set -euo pipefail
+
+          SDK="$PWD/sdk"
+          TARGET=$(find "$SDK/staging_dir" \
             -maxdepth 1 -type d -name 'target-*' | head -1)
-          test -n "$SYSROOT"
+          TOOLCHAIN=$(find "$SDK/staging_dir" \
+            -maxdepth 1 -type d -name 'toolchain-*' | head -1)
 
-          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
-          export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig"
+          export STAGING_DIR="$SDK/staging_dir"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          export PKG_CONFIG_SYSROOT_DIR="$TARGET"
+          export PKG_CONFIG_LIBDIR="$TARGET/usr/lib/pkgconfig:$TARGET/usr/share/pkgconfig"
           export PKG_CONFIG_PATH=""
 
-          "$TOOLCHAIN" --sysroot="$SYSROOT" \
+          echo "Checking GLib/GIO..."
+          pkg-config --modversion gio-2.0 glib-2.0 gobject-2.0
+
+          CC=$(find "$TOOLCHAIN/bin" -maxdepth 1 \
+            -name '*gcc' -type f | head -1)
+          test -n "$CC"
+
+          "$CC" --sysroot="$TARGET" \
             -O2 -Wall -Wextra \
             -o ble-tts ble-tts.c \
-            $(pkg-config --cflags --libs gio-2.0 glib-2.0 gobject-2.0)
+            $(pkg-config --cflags --libs \
+              gio-2.0 glib-2.0 gobject-2.0)
 
-      - name: Upload executable
+          file ble-tts
+
+      - name: Upload ARMv7 executable
         uses: actions/upload-artifact@v4
         with:
           name: ble-tts-armv7
           path: ble-tts
+          if-no-files-found: error
