@@ -97,20 +97,19 @@ jobs:
           assert marker in source, \
               "RHVoice SConstruct has changed"
 
-          replacement = '''
-          env_args["CC"] = os.environ["CROSS_PREFIX"] + "gcc"
-          env_args["CXX"] = os.environ["CROSS_PREFIX"] + "g++"
-          env_args["AR"] = os.environ["CROSS_PREFIX"] + "ar"
-          env_args["RANLIB"] = os.environ["CROSS_PREFIX"] + "ranlib"
-          env_args["ENV"] = dict(os.environ)
-          env_args["LIBS"]=[]
-          '''
+          replacement = '\n'.join([
+              'env_args["CC"] = os.environ["CROSS_PREFIX"] + "gcc"',
+              'env_args["CXX"] = os.environ["CROSS_PREFIX"] + "g++"',
+              'env_args["AR"] = os.environ["CROSS_PREFIX"] + "ar"',
+              'env_args["RANLIB"] = os.environ["CROSS_PREFIX"] + "ranlib"',
+              'env_args["ENV"] = dict(os.environ)',
+              marker
+          ])
 
-          source = source.replace(
-              marker,
-              replacement.strip(),
-              1
-          )
+          source = source.replace(marker, replacement, 1)
+
+          path.write_text(source)
+
 
           path.write_text(source)
           PY
