@@ -87,31 +87,40 @@ jobs:
           set -euo pipefail
 
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
           path = Path("SConstruct")
           source = path.read_text()
 
           marker = 'env_args["LIBS"]=[]'
+          assert marker in source, "RHVoice SConstruct has changed"
 
-          assert marker in source, \
-              "RHVoice SConstruct has changed"
+          lines = source.splitlines(keepends=True)
 
-          replacement = '\n'.join([
-              'env_args["CC"] = os.environ["CROSS_PREFIX"] + "gcc"',
-              'env_args["CXX"] = os.environ["CROSS_PREFIX"] + "g++"',
-              'env_args["AR"] = os.environ["CROSS_PREFIX"] + "ar"',
-              'env_args["RANLIB"] = os.environ["CROSS_PREFIX"] + "ranlib"',
-              'env_args["ENV"] = dict(os.environ)',
-              marker
-          ])
+          for i, line in enumerate(lines):
+              if marker in line:
+                  indent = line[:len(line) - len(line.lstrip())]
 
-          source = source.replace(marker, replacement, 1)
+                  additions = [
+                      'env_args["CC"] = os.environ["CROSS_PREFIX"] + "gcc"',
+                      'env_args["CXX"] = os.environ["CROSS_PREFIX"] + "g++"',
+                      'env_args["AR"] = os.environ["CROSS_PREFIX"] + "ar"',
+                      'env_args["RANLIB"] = os.environ["CROSS_PREFIX"] + "ranlib"',
+                      'env_args["ENV"] = dict(os.environ)',
+                  ]
 
-          path.write_text(source)
+                  lines[i:i] = [
+                      indent + entry + "\n"
+                      for entry in additions
+                  ]
+                  break
 
+          path.write_text("".join(lines))
 
-          path.write_text(source)
+          import ast
+          ast.parse(path.read_text())
+          print("SConstruct syntax OK")
           PY
 
       - name: Build RHVoice
