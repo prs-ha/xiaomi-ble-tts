@@ -1,0 +1,180 @@
+
+name: Build RHVoice OpenWrt ARMv7
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            zstd \
+            pkg-config \
+            scons \
+            python3 \
+            git \
+            curl \
+            file
+
+      - name: Download OpenWrt SDK
+        run: |
+          curl -fL --retry 3 -o sdk.tar.zst \
+            "https://mirror.sjtu.edu.cn/openwrt/releases/25.12.6/targets/imx/cortexa7/openwrt-sdk-25.12.6-imx-cortexa7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst"
+
+          mkdir sdk
+          tar --zstd -xf sdk.tar.zst \
+            -C sdk --strip-components=1
+
+      - name: Download RHVoice sources
+        run: |
+          git clone --recursive \
+            https://github.com/RHVoice/RHVoice.git \
+            rhvoice
+
+          cd rhvoice
+          git submodule status
+          git rev-parse HEAD
+
+      - name: Configure cross compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="$GITHUB_WORKSPACE/sdk"
+
+          TARGET=$(find "$SDK/staging_dir" \
+            -maxdepth 1 -type d -name 'target-*' \
+            | head -1)
+
+          TOOLCHAIN=$(find "$SDK/staging_dir" \
+            -maxdepth 1 -type d -name 'toolchain-*' \
+            | head -1)
+
+          test -n "$TARGET"
+          test -n "$TOOLCHAIN"
+
+          CROSS_GCC=$(find "$TOOLCHAIN/bin" \
+            -maxdepth 1 -name '*gcc' -type f \
+            | head -1)
+
+          test -n "$CROSS_GCC"
+
+          CROSS_PREFIX="${CROSS_GCC%gcc}"
+
+          echo "STAGING_DIR=$SDK/staging_dir" >> "$GITHUB_ENV"
+          echo "TARGET_SYSROOT=$TARGET" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "CROSS_PREFIX=$CROSS_PREFIX" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
+
+          "$CROSS_GCC" --version
+          file "$CROSS_GCC"
+
+      - name: Prepare SCons cross compilation
+        working-directory: rhvoice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("SConstruct")
+          source = path.read_text()
+
+          marker = 'env_args["LIBS"]=[]'
+
+          assert marker in source, \
+              "RHVoice SConstruct has changed"
+
+          replacement = '''
+          env_args["CC"] = os.environ["CROSS_PREFIX"] + "gcc"
+          env_args["CXX"] = os.environ["CROSS_PREFIX"] + "g++"
+          env_args["AR"] = os.environ["CROSS_PREFIX"] + "ar"
+          env_args["RANLIB"] = os.environ["CROSS_PREFIX"] + "ranlib"
+          env_args["ENV"] = dict(os.environ)
+          env_args["LIBS"]=[]
+          '''
+
+          source = source.replace(
+              marker,
+              replacement.strip(),
+              1
+          )
+
+          path.write_text(source)
+          PY
+
+      - name: Build RHVoice
+        working-directory: rhvoice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PKG_CONFIG_SYSROOT_DIR="$TARGET_SYSROOT"
+          export PKG_CONFIG_LIBDIR="$TARGET_SYSROOT/usr/lib/pkgconfig:$TARGET_SYSROOT/usr/share/pkgconfig"
+          export PKG_CONFIG_PATH=""
+
+          scons -j2 \
+            audio_libs=none \
+            languages=romanian \
+            enable_sonic=no \
+            CCFLAGS="-O2" \
+            2>&1 | tee ../rhvoice-build.log
+
+      - name: Stage installation
+        working-directory: rhvoice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PKG_CONFIG_SYSROOT_DIR="$TARGET_SYSROOT"
+          export PKG_CONFIG_LIBDIR="$TARGET_SYSROOT/usr/lib/pkgconfig:$TARGET_SYSROOT/usr/share/pkgconfig"
+          export PKG_CONFIG_PATH=""
+
+          scons install -j2 \
+            audio_libs=none \
+            languages=romanian \
+            enable_sonic=no \
+            CCFLAGS="-O2" \
+            prefix=/usr \
+            DESTDIR="$GITHUB_WORKSPACE/rhvoice-package"
+
+      - name: Inspect compiled files
+        shell: bash
+        run: |
+          echo "Installed files:"
+          find rhvoice-package -type f | head -80
+
+          echo "ARM executables and libraries:"
+          find rhvoice-package -type f \
+            -exec file {} \; \
+            | grep -E 'ELF|ARM' || true
+
+          tar -czf rhvoice-openwrt-armv7.tar.gz \
+            -C rhvoice-package .
+
+      - name: Upload RHVoice package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhvoice-openwrt-armv7
+          path: rhvoice-openwrt-armv7.tar.gz
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhvoice-build-log
+          path: rhvoice-build.log
+          if-no-files-found: ignore
